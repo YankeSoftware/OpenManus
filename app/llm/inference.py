@@ -1,17 +1,11 @@
 import base64
+import json
 import os
 from typing import Any, Dict, List, Literal, Optional, Tuple, Union
 
-import litellm
-from litellm import completion, completion_cost
-from litellm.exceptions import (
-    APIConnectionError,
-    RateLimitError,
-    ServiceUnavailableError,
-)
+import aiohttp
 from tenacity import (
     retry,
-    retry_if_exception_type,
     stop_after_attempt,
     wait_random_exponential,
 )
@@ -59,81 +53,9 @@ class LLM:
             self.retry_max_wait = getattr(llm_config, "retry_max_wait", 10)
             self.custom_llm_provider = getattr(llm_config, "custom_llm_provider", None)
 
-            # Get model info if available
-            self.model_info = None
-            try:
-                self.model_info = litellm.get_model_info(self.model)
-            except Exception as e:
-                logger.warning(f"Could not get model info for {self.model}: {e}")
-
-            # Configure litellm
-            if self.api_type == "azure":
-                litellm.api_base = self.base_url
-                litellm.api_key = self.api_key
-                litellm.api_version = self.api_version
-            else:
-                litellm.api_key = self.api_key
-                if self.base_url:
-                    litellm.api_base = self.base_url
-
             # Initialize cost tracker
             self.cost_tracker = Cost()
             self.initialized = True
-
-            # Initialize completion function
-            self._initialize_completion_function()
-
-    def _initialize_completion_function(self):
-        """Initialize the completion function with retry logic"""
-
-        def attempt_on_error(retry_state):
-            logger.error(
-                f"{retry_state.outcome.exception()}. Attempt #{retry_state.attempt_number}"
-            )
-            return True
-
-        @retry(
-            reraise=True,
-            stop=stop_after_attempt(self.num_retries),
-            wait=wait_random_exponential(
-                min=self.retry_min_wait, max=self.retry_max_wait
-            ),
-            retry=retry_if_exception_type(
-                (RateLimitError, APIConnectionError, ServiceUnavailableError)
-            ),
-            after=attempt_on_error,
-        )
-        def wrapper(*args, **kwargs):
-            model_name = self.model
-            if self.api_type == "azure":
-                model_name = f"azure/{self.model}"
-
-            # Set default parameters if not provided
-            if "max_tokens" not in kwargs:
-                kwargs["max_tokens"] = self.max_tokens
-            if "temperature" not in kwargs:
-                kwargs["temperature"] = self.temperature
-            if "top_p" not in kwargs:
-                kwargs["top_p"] = self.top_p
-            if "timeout" not in kwargs:
-                kwargs["timeout"] = self.timeout
-
-            kwargs["model"] = model_name
-
-            # Add API credentials if not in kwargs
-            if "api_key" not in kwargs:
-                kwargs["api_key"] = self.api_key
-            if "base_url" not in kwargs and self.base_url:
-                kwargs["base_url"] = self.base_url
-            if "api_version" not in kwargs and self.api_version:
-                kwargs["api_version"] = self.api_version
-            if "custom_llm_provider" not in kwargs and self.custom_llm_provider:
-                kwargs["custom_llm_provider"] = self.custom_llm_provider
-
-            resp = completion(**kwargs)
-            return resp
-
-        self._completion = wrapper
 
     @staticmethod
     def format_messages(messages: List[Union[dict, Message]]) -> List[dict]:
@@ -175,32 +97,6 @@ class LLM:
 
         return formatted_messages
 
-    def _calculate_and_track_cost(self, response) -> float:
-        """
-        Calculate and track the cost of an LLM API call.
-
-        Args:
-            response: The response from litellm
-
-        Returns:
-            float: The calculated cost
-        """
-        try:
-            # Use litellm's completion_cost function
-            cost = completion_cost(completion_response=response)
-
-            # Add the cost to our tracker
-            if cost > 0:
-                self.cost_tracker.add_cost(cost)
-                logger.info(
-                    f"Added cost: ${cost:.6f}, Total: ${self.cost_tracker.accumulated_cost:.6f}"
-                )
-
-            return cost
-        except Exception as e:
-            logger.warning(f"Cost calculation failed: {e}")
-            return 0.0
-
     def is_local(self) -> bool:
         """
         Check if the model is running locally.
@@ -218,20 +114,6 @@ class LLM:
         ):
             return True
         return False
-
-    def do_completion(self, *args, **kwargs) -> Tuple[Any, float, float]:
-        """
-        Perform a completion request and track cost.
-
-        Returns:
-            Tuple[Any, float, float]: (response, current_cost, accumulated_cost)
-        """
-        response = self._completion(*args, **kwargs)
-
-        # Calculate and track cost
-        current_cost = self._calculate_and_track_cost(response)
-
-        return response, current_cost, self.cost_tracker.accumulated_cost
 
     @staticmethod
     def encode_image(image_path: str) -> str:
@@ -272,21 +154,33 @@ class LLM:
             ]
         return messages
 
-    def do_multimodal_completion(
-            self, text: str, image_path: str
-    ) -> Tuple[Any, float, float]:
-        """
-        Perform a multimodal completion with text and image.
+    async def _parse_stream(self, response) -> str:
+        """Parse SSE stream from the API response.
 
         Args:
-            text: Text prompt
-            image_path: Path to the image file
+            response: aiohttp response object
 
         Returns:
-            Tuple[Any, float, float]: (response, current_cost, accumulated_cost)
+            str: Concatenated content from the stream
         """
-        messages = self.prepare_messages(text, image_path=image_path)
-        return self.do_completion(messages=messages)
+        collected = []
+        async for line in response.content:
+            if line:
+                line = line.decode('utf-8').strip()
+                if line.startswith('data: '):
+                    json_str = line[6:].strip()
+                    if json_str == "[DONE]":
+                        break
+                    try:
+                        data = json.loads(json_str)
+                        content = data['choices'][0]['delta'].get('content', '')
+                        if content:
+                            collected.append(content)
+                            print(content, end="", flush=True)
+                    except json.JSONDecodeError:
+                        continue
+        print()  # Add newline after streaming
+        return "".join(collected)
 
     @retry(
         wait=wait_random_exponential(min=1, max=60),
@@ -323,141 +217,147 @@ class LLM:
             else:
                 messages = self.format_messages(messages)
 
-            model_name = self.model
-            if self.api_type == "azure":
-                # For Azure, litellm expects model name in format: azure/<deployment_name>
-                model_name = f"azure/{self.model}"
+            logger.debug(f"Sending request with {len(messages)} messages")
+            
+            async with aiohttp.ClientSession() as session:
+                payload = {
+                    "model": self.model,
+                    "messages": messages,
+                    "max_tokens": self.max_tokens,
+                    "temperature": temperature or self.temperature,
+                    "stream": stream
+                }
 
-            if not stream:
-                # Non-streaming request
-                response = await litellm.acompletion(
-                    model=model_name,
-                    messages=messages,
-                    max_tokens=self.max_tokens,
-                    temperature=temperature or self.temperature,
-                    stream=False,
-                )
+                async with session.post(
+                    f"{self.base_url}/chat/completions",
+                    headers={
+                        "Content-Type": "application/json",
+                        "Authorization": f"Bearer {self.api_key}"
+                    },
+                    json=payload,
+                    timeout=aiohttp.ClientTimeout(total=self.timeout)
+                ) as response:
+                    response.raise_for_status()
+                    
+                    if not stream:
+                        result = await response.json()
+                        content = result['choices'][0]['message']['content']
+                        if not content or content.isspace():
+                            raise ValueError("Empty response from LLM")
+                        return content
+                    
+                    return await self._parse_stream(response)
 
-                # Calculate and track cost
-                self._calculate_and_track_cost(response)
-
-                if not response.choices or not response.choices[0].message.content:
-                    raise ValueError("Empty or invalid response from LLM")
-                return response.choices[0].message.content
-
-            # Streaming request
-            collected_messages = []
-            async for chunk in await litellm.acompletion(
-                model=model_name,
-                messages=messages,
-                max_tokens=self.max_tokens,
-                temperature=temperature or self.temperature,
-                stream=True,
-            ):
-                chunk_message = chunk.choices[0].delta.content or ""
-                collected_messages.append(chunk_message)
-                print(chunk_message, end="", flush=True)
-
-            # For streaming responses, cost is calculated on the last chunk
-            if hasattr(chunk, "usage") and chunk.usage:
-                self._calculate_and_track_cost(chunk)
-
-            print()  # Newline after streaming
-            full_response = "".join(collected_messages).strip()
-            if not full_response:
-                raise ValueError("Empty response from streaming LLM")
-            return full_response
-
+        except aiohttp.ClientError as e:
+            logger.error(f"Network error in ask: {str(e)}")
+            raise
         except ValueError as ve:
-            logger.error(f"Validation error: {ve}")
+            logger.error(f"Validation error in ask: {str(ve)}")
             raise
         except Exception as e:
-            logger.error(f"Unexpected error in ask: {e}")
+            logger.error(f"Unexpected error in ask: {str(e)}")
             raise
 
     @retry(
         wait=wait_random_exponential(min=1, max=60),
-        stop=stop_after_attempt(6),
+        stop=stop_after_attempt(6)
     )
     async def ask_tool(
-        self,
-        messages: List[Union[dict, Message]],
-        system_msgs: Optional[List[Union[dict, Message]]] = None,
-        timeout: int = 60,
-        tools: Optional[List[dict]] = None,
-        tool_choice: Literal["none", "auto", "required"] = "auto",
-        temperature: Optional[float] = None,
-        **kwargs,
+         self,
+         messages: List[Union[dict, Message]],
+         system_msgs: Optional[List[Union[dict, Message]]] = None,
+         timeout: Optional[int] = None,
+         tools: Optional[List[dict]] = None,
+         tool_choice: Literal["none", "auto", "required"] = "auto",
+         temperature: Optional[float] = None,
     ):
-        """
-        Ask LLM using functions/tools and return the response.
-
-        Args:
-            messages: List of conversation messages
-            system_msgs: Optional system messages to prepend
-            timeout: Request timeout in seconds
-            tools: List of tools to use
-            tool_choice: Tool choice strategy
-            temperature: Sampling temperature for the response
-            **kwargs: Additional completion arguments
-
-        Returns:
-            The model's response
-
-        Raises:
-            ValueError: If tools, tool_choice, or messages are invalid
-            Exception: For unexpected errors
-        """
+        """Execute a tool-enabled chat completion."""
         try:
-            # Validate tool_choice
-            if tool_choice not in ["none", "auto", "required"]:
-                raise ValueError(f"Invalid tool_choice: {tool_choice}")
-
-            # Format messages
+            # Format system and user messages
             if system_msgs:
                 system_msgs = self.format_messages(system_msgs)
                 messages = system_msgs + self.format_messages(messages)
             else:
                 messages = self.format_messages(messages)
 
-            # Validate tools if provided
-            if tools:
-                for tool in tools:
-                    if not isinstance(tool, dict) or "type" not in tool:
-                        raise ValueError("Each tool must be a dict with 'type' field")
+            logger.debug(f"Sending tool request with {len(messages)} messages")
+            
+            async with aiohttp.ClientSession() as session:
+                payload = {
+                    "model": self.model,
+                    "messages": messages,
+                    "max_tokens": self.max_tokens,
+                    "temperature": temperature or self.temperature,
+                    "tools": tools,
+                    "tool_choice": tool_choice,
+                    "stop": ["}}}}", "}}}", "]]", "```"]  # Add stop sequences to prevent garbage output
+                }
 
-            model_name = self.model
-            if self.api_type == "azure":
-                # For Azure, litellm expects model name in format: azure/<deployment_name>
-                model_name = f"azure/{self.model}"
+                async with session.post(
+                    f"{self.base_url}/chat/completions",
+                    headers={
+                        "Content-Type": "application/json",
+                        "Authorization": f"Bearer {self.api_key}"
+                    },
+                    json=payload,
+                    timeout=aiohttp.ClientTimeout(total=timeout or self.timeout)
+                ) as response:
+                    response.raise_for_status()
+                    result = await response.json()
+                    
+                    # Validate the response structure
+                    if not isinstance(result, dict):
+                        raise ValueError(f"Invalid response type: {type(result)}")
+                    if 'choices' not in result:
+                        raise ValueError("No 'choices' in response")
+                    if not result['choices']:
+                        raise ValueError("Empty choices in response")
+                    
+                    message = result['choices'][0]['message']
+                    if not isinstance(message, dict):
+                        raise ValueError(f"Invalid message type: {type(message)}")
+                    
+                    # Clean up any potential garbage in content
+                    if 'content' in message:
+                        content = message['content']
+                        if content:
+                            # Remove any garbage patterns
+                            if any(pattern in content for pattern in ['}}}', ']]', '```', '\\n', '\\t']):
+                                logger.warning("Found potential garbage in response content, cleaning...")
+                                lines = content.split('\n')
+                                content = '\n'.join(line for line in lines 
+                                                  if not any(pattern in line 
+                                                           for pattern in ['}}}', ']]', '```', '\\', ':', '{', '}']))
+                                message['content'] = content.strip()
+                    
+                    # Handle tool calls
+                    if 'tool_calls' in message:
+                        tool_calls = message['tool_calls']
+                        if not isinstance(tool_calls, list):
+                            raise ValueError(f"Invalid tool_calls type: {type(tool_calls)}")
+                        # Validate each tool call
+                        for tool_call in tool_calls:
+                            if not isinstance(tool_call, dict):
+                                raise ValueError(f"Invalid tool call type: {type(tool_call)}")
+                            if 'function' not in tool_call:
+                                raise ValueError("No 'function' in tool call")
+                            if 'name' not in tool_call['function']:
+                                raise ValueError("No 'name' in tool call function")
+                    
+                    # Ensure we have either content or valid tool calls
+                    if not message.get('content') and not message.get('tool_calls'):
+                        raise ValueError("Response has neither content nor tool calls")
+                        
+                    return message
 
-            # Set up the completion request
-            response = await litellm.acompletion(
-                model=model_name,
-                messages=messages,
-                temperature=temperature or self.temperature,
-                max_tokens=self.max_tokens,
-                tools=tools,
-                tool_choice=tool_choice,
-                timeout=timeout,
-                **kwargs,
-            )
-
-            # Calculate and track cost
-            self._calculate_and_track_cost(response)
-
-            # Check if response is valid
-            if not response.choices or not response.choices[0].message:
-                print(response)
-                raise ValueError("Invalid or empty response from LLM")
-
-            return response.choices[0].message
-
+        except aiohttp.ClientError as e:
+            logger.error(f"Network error in ask_tool: {str(e)}")
+            raise
         except ValueError as ve:
-            logger.error(f"Validation error: {ve}")
+            logger.error(f"Validation error in ask_tool: {str(ve)}")
             raise
         except Exception as e:
-            logger.error(f"Unexpected error in ask_tool: {e}")
+            logger.error(f"Unexpected error in ask_tool: {str(e)}")
             raise
 
     def get_cost(self):
@@ -477,18 +377,6 @@ class LLM:
             str: Formatted string of cost information
         """
         return self.cost_tracker.log()
-
-    def get_token_count(self, messages):
-        """
-        Get the token count for a list of messages.
-
-        Args:
-            messages: List of messages
-
-        Returns:
-            int: Token count
-        """
-        return litellm.token_counter(model=self.model, messages=messages)
 
     def __str__(self):
         return f"LLM(model={self.model}, base_url={self.base_url})"

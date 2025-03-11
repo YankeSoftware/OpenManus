@@ -20,9 +20,10 @@ class LLMSettings(BaseModel):
     base_url: str = Field(..., description="API base URL")
     api_key: str = Field(..., description="API key")
     max_tokens: int = Field(4096, description="Maximum number of tokens per request")
-    temperature: float = Field(1.0, description="Sampling temperature")
-    api_type: str = Field(..., description="AzureOpenai or Openai")
-    api_version: str = Field(..., description="Azure Openai version if AzureOpenai")
+    temperature: float = Field(0.7, description="Sampling temperature")
+    api_type: str = Field("openai", description="AzureOpenai or Openai")
+    api_version: str = Field("", description="Azure Openai version if AzureOpenai")
+    timeout: int = Field(60, description="Request timeout in seconds")
 
 
 class AppConfig(BaseModel):
@@ -68,18 +69,23 @@ class Config:
     def _load_initial_config(self):
         raw_config = self._load_config()
         base_llm = raw_config.get("llm", {})
-        llm_overrides = {
-            k: v for k, v in raw_config.get("llm", {}).items() if isinstance(v, dict)
+        
+        # Extract default settings
+        default_settings = {
+            "model": base_llm.get("default", {}).get("model"),
+            "base_url": base_llm.get("default", {}).get("base_url"),
+            "api_key": base_llm.get("default", {}).get("api_key"),
+            "max_tokens": base_llm.get("default", {}).get("max_tokens", 4096),
+            "temperature": base_llm.get("default", {}).get("temperature", 0.7),
+            "api_type": base_llm.get("default", {}).get("api_type", "openai"),
+            "api_version": base_llm.get("default", {}).get("api_version", ""),
+            "timeout": base_llm.get("default", {}).get("timeout", 60),
         }
 
-        default_settings = {
-            "model": base_llm.get("model"),
-            "base_url": base_llm.get("base_url"),
-            "api_key": base_llm.get("api_key"),
-            "max_tokens": base_llm.get("max_tokens", 4096),
-            "temperature": base_llm.get("temperature", 1.0),
-            "api_type": base_llm.get("api_type", ""),
-            "api_version": base_llm.get("api_version", ""),
+        # Get other configurations (like vision if present)
+        llm_overrides = {
+            k: v for k, v in base_llm.items() 
+            if isinstance(v, dict) and k != "default"
         }
 
         config_dict = {

@@ -47,48 +47,52 @@ class ToolCallAgent(ReActAgent):
             tools=self.available_tools.to_params(),
             tool_choice=self.tool_choices,
         )
-        self.tool_calls = response.tool_calls
+
+        # Extract tool calls and content from response dict
+        tool_calls = response.get('tool_calls', [])
+        content = response.get('content', '')
+        
+        # Store tool calls for later use
+        self.tool_calls = tool_calls
 
         # Log response info
-        logger.info(f"✨ {self.name}'s thoughts: {response.content}")
-        logger.info(
-            f"🛠️ {self.name} selected {len(response.tool_calls) if response.tool_calls else 0} tools to use"
-        )
-        if response.tool_calls:
+        logger.info(f"✨ {self.name}'s thoughts: {content}")
+        logger.info(f"🛠️ {self.name} selected {len(tool_calls)} tools to use")
+        if tool_calls:
             logger.info(
-                f"🧰 Tools being prepared: {[call.function.name for call in response.tool_calls]}"
+                f"🧰 Tools being prepared: {[call['function']['name'] for call in tool_calls]}"
             )
 
         try:
             # Handle different tool_choices modes
             if self.tool_choices == "none":
-                if response.tool_calls:
+                if tool_calls:
                     logger.warning(
                         f"🤔 Hmm, {self.name} tried to use tools when they weren't available!"
                     )
-                if response.content:
-                    self.memory.add_message(Message.assistant_message(response.content))
+                if content:
+                    self.memory.add_message(Message.assistant_message(content))
                     return True
                 return False
 
             # Create and add assistant message
             assistant_msg = (
                 Message.from_tool_calls(
-                    content=response.content, tool_calls=self.tool_calls
+                    content=content, tool_calls=tool_calls
                 )
-                if self.tool_calls
-                else Message.assistant_message(response.content)
+                if tool_calls
+                else Message.assistant_message(content)
             )
             self.memory.add_message(assistant_msg)
 
-            if self.tool_choices == "required" and not self.tool_calls:
+            if self.tool_choices == "required" and not tool_calls:
                 return True  # Will be handled in act()
 
             # For 'auto' mode, continue with content if no commands but content exists
-            if self.tool_choices == "auto" and not self.tool_calls:
-                return bool(response.content)
+            if self.tool_choices == "auto" and not tool_calls:
+                return bool(content)
 
-            return bool(self.tool_calls)
+            return bool(tool_calls)
         except Exception as e:
             logger.error(f"🚨 Oops! The {self.name}'s thinking process hit a snag: {e}")
             self.memory.add_message(

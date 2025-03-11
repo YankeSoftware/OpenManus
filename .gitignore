@@ -178,3 +178,10 @@ data/
 
 # Workspace
 workspace/
+config/config.toml
+config/config.example.toml
+config/config copy.toml
+config.example.toml
+config - original.toml
+config/config.example.toml
+app/config.py
