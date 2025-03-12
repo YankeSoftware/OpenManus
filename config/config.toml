@@ -20,7 +20,7 @@ api_version = ""
 
 # Model-specific settings for DeepSeek
 [llm.deepseek]
-context_window = 8192  # DeepSeek's context window
+context_window = 65536  # DeepSeek's actual context window (updated from 8192)
 system_prompt = """You are an advanced AI assistant powered by DeepSeek-R1, specializing in:
 1. Hierarchical planning and reasoning
 2. Dynamic knowledge graph manipulation
@@ -53,6 +53,17 @@ execution_temperature = 0.0   # Precise execution
 max_reasoning_steps = 5       # Maximum steps in reasoning chain
 context_overlap = 0.3         # Context overlap between steps
 memory_buffer_size = 8196     # Size of working memory buffer
+
+# Document handling and chunking (new section)
+[document_processing]
+# Maximum size for document chunks (in tokens)
+max_chunk_size = 50000        # Well below context window to leave room for reasoning
+# Overlap between chunks (in tokens)
+chunk_overlap = 1000          # For maintaining context between chunks
+# Number of chunks to process in a single run
+max_chunks_per_session = 2    # Process in sequential batches
+# Safety margin to prevent token limit errors (percentage of context window)
+token_safety_margin = 0.2     # 20% margin below maximum
 
 # [llm] #AZURE OPENAI:
 # api_type= 'azure'

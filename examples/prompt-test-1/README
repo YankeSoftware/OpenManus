@@ -1,0 +1,3 @@
+PROMPT FOR INPUT TO CONSOLE IS BELOW
+
+Process all .txt files in C:\Users\u\Documents\GitHub\OpenManus\examples\outputs: if no files exist, create placeholder.txt with a timestamp and exit; otherwise, for each file, summarize key points in 1-3 sentences, extract unique terms (words used ≥3 times), flag inconsistencies (e.g., conflicting dates/numbers), save summaries to [original_name]_summary.txt, save unique terms to terms.csv (format: term, count, source_file), log inconsistencies to issues.txt with line numbers, delete temporary files, and write completion status to last_run.log (success/failure, files processed). Errors should be logged to errors.txt; no external APIs or cloud calls allowed; all output files must remain in the original directory.
