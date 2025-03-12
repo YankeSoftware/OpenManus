@@ -17,6 +17,7 @@ from app.schema import Message
 
 class LLM:
     _instances: Dict[str, "LLM"] = {}
+    _func_call_clients: Dict[str, AsyncOpenAI] = {}
 
     def __new__(
         cls, config_name: str = "default", llm_config: Optional[LLMSettings] = None
@@ -31,6 +32,7 @@ class LLM:
         self, config_name: str = "default", llm_config: Optional[LLMSettings] = None
     ):
         if not hasattr(self, "client"):  # Only initialize if not already initialized
+            # Initialize primary client
             llm_config = llm_config or config.llm
             llm_config = llm_config.get(config_name, llm_config["default"])
             self.model = llm_config.model
@@ -40,6 +42,8 @@ class LLM:
             self.api_key = llm_config.api_key
             self.api_version = llm_config.api_version
             self.base_url = llm_config.base_url
+            
+            # Initialize primary client
             if self.api_type == "azure":
                 self.client = AsyncAzureOpenAI(
                     base_url=self.base_url,
@@ -48,6 +52,45 @@ class LLM:
                 )
             else:
                 self.client = AsyncOpenAI(api_key=self.api_key, base_url=self.base_url)
+                
+            # Initialize function calling client if available
+            try:
+                if "function_calling" in config.llm:
+                    func_config = config.llm["function_calling"]
+                    self.func_model = func_config.model
+                    self.func_max_tokens = func_config.max_tokens
+                    self.func_temperature = func_config.temperature
+                    self.func_api_type = func_config.api_type
+                    
+                    logger.info(f"Initialized function calling model: {self.func_model} with max_tokens: {self.func_max_tokens}")
+                    
+                    if func_config.api_type == "azure":
+                        self.func_client = AsyncAzureOpenAI(
+                            base_url=func_config.base_url,
+                            api_key=func_config.api_key,
+                            api_version=func_config.api_version,
+                        )
+                    else:
+                        self.func_client = AsyncOpenAI(
+                            api_key=func_config.api_key, 
+                            base_url=func_config.base_url
+                        )
+                else:
+                    logger.warning("No function_calling configuration found. Falling back to default model for function calls.")
+                    # If no function calling config, use the same client
+                    self.func_client = self.client
+                    self.func_model = self.model
+                    self.func_max_tokens = self.max_tokens
+                    self.func_temperature = self.temperature
+                    self.func_api_type = self.api_type
+            except Exception as e:
+                logger.warning(f"Failed to initialize function calling client: {e}. Using default model instead.")
+                # Fall back to primary client
+                self.func_client = self.client
+                self.func_model = self.model
+                self.func_max_tokens = self.max_tokens
+                self.func_temperature = self.temperature
+                self.func_api_type = self.api_type
 
     @staticmethod
     def format_messages(messages: List[Union[dict, Message]]) -> List[dict]:
@@ -193,6 +236,7 @@ class LLM:
     ):
         """
         Ask LLM using functions/tools and return the response.
+        This method uses the function_calling model configuration if available.
 
         Args:
             messages: List of conversation messages
@@ -229,17 +273,57 @@ class LLM:
                     if not isinstance(tool, dict) or "type" not in tool:
                         raise ValueError("Each tool must be a dict with 'type' field")
 
-            # Set up the completion request
-            response = await self.client.chat.completions.create(
-                model=self.model,
-                messages=messages,
-                temperature=temperature or self.temperature,
-                max_tokens=self.max_tokens,
-                tools=tools,
-                tool_choice=tool_choice,
-                timeout=timeout,
-                **kwargs,
-            )
+            try:
+                # Use function calling client and model
+                logger.info(f"Using function calling model: {self.func_model}")
+                # Set up the completion request with function calling client
+                response = await self.func_client.chat.completions.create(
+                    model=self.func_model,
+                    messages=messages,
+                    temperature=temperature or self.func_temperature,
+                    max_tokens=self.func_max_tokens,
+                    tools=tools,
+                    tool_choice=tool_choice,
+                    timeout=timeout,
+                    **kwargs,
+                )
+            except OpenAIError as oe:
+                # If the model doesn't support function calling, fallback to regular ask
+                if "does not support Function Calling" in str(oe):
+                    logger.warning(f"Model {self.func_model} doesn't support function calling, falling back to regular ask")
+                    # Convert the system prompt and messages to a single combined prompt
+                    combined_prompt = ""
+                    if system_msgs:
+                        for msg in system_msgs:
+                            if msg.get("content"):
+                                combined_prompt += f"{msg.get('content')}\n\n"
+                    
+                    for msg in messages:
+                        if msg.get("role") and msg.get("content"):
+                            combined_prompt += f"{msg.get('role').upper()}: {msg.get('content')}\n\n"
+                    
+                    # Add information about the tools if provided
+                    if tools:
+                        combined_prompt += "Available tools:\n"
+                        for tool in tools:
+                            combined_prompt += f"- {tool.get('name', 'Unknown')}: {tool.get('description', 'No description')}\n"
+                    
+                    # Call the regular ask method
+                    regular_response = await self.ask(
+                        messages=[{"role": "user", "content": combined_prompt}],
+                        temperature=temperature or self.temperature,
+                    )
+                    
+                    # Create a synthetic response
+                    from openai.types.chat import ChatCompletionMessage
+                    return ChatCompletionMessage(
+                        role="assistant",
+                        content=regular_response,
+                        tool_calls=None
+                    )
+                else:
+                    # If it's another error, re-raise it
+                    raise
 
             # Check if response is valid
             if not response.choices or not response.choices[0].message:

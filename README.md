@@ -7,7 +7,57 @@ English | [中文](README_zh.md) | [한국어](README_ko.md)
 
 # 👋 OpenManus
 
-Manus is incredible, but OpenManus can achieve any idea without an *Invite Code* 🛫!
+OpenManus is a sophisticated AI agent framework that implements hierarchical planning and dynamic knowledge graph manipulation for complex task execution. Built on advanced Chain-of-Action principles, it provides a robust, safe, and transparent way to accomplish any task.
+
+## 🏗️ Architecture
+
+OpenManus implements a hierarchical planning system with dynamic operational space and knowledge graph manipulation:
+
+### Hierarchical Planning System
+
+1. **Event Processing Layer**
+   - User inquiry processing
+   - External event handling
+   - Context initialization
+
+2. **Reasoning Layer**
+   - Pre-reasoning with knowledge graph context
+   - Dynamic operational space manipulation
+   - Goal identification and evaluation
+
+3. **Action Layer**
+   - Task decomposition and planning
+   - Data aggregation and processing
+   - Outcome verification and validation
+
+4. **Execution Layer**
+   - Function execution
+   - Data flow management
+   - Result verification
+
+### Operational Space Components
+
+- **System Nodes**: Core processing units
+- **External Nodes**: Interface with external systems
+- **Agent Nodes**: Autonomous decision makers
+- **Function Nodes**: Executable operations
+- **Mutable Nodes**: Dynamic state storage
+
+### Knowledge Graph Integration
+
+The system maintains a dynamic knowledge graph that:
+- Tracks relationships between operations
+- Manages data flow and dependencies
+- Updates based on execution results
+- Provides context for decision making
+
+## Features
+
+- **Hierarchical Task Planning**: Break down complex tasks into manageable sub-tasks
+- **Dynamic Knowledge Graph**: Real-time updates of operational context
+- **Chain-of-Action Verification**: Trust-based action verification system
+- **Transparent Execution**: Clear tracking of all system operations
+- **Safety-First Design**: Built-in verification at every step
 
 Our team members [@Xinbin Liang](https://github.com/mannaandpoem) and [@Jinyu Xiang](https://github.com/XiangJinyu) (core authors), along with [@Zhaoyang Yu](https://github.com/MoshiQAQ), [@Jiayi Zhang](https://github.com/didiforgithub), and [@Sirui Hong](https://github.com/stellaHSR), we are from [@MetaGPT](https://github.com/geekan/MetaGPT). The prototype is launched within 3 hours and we are keeping building!
 
@@ -115,10 +165,43 @@ python main.py
 
 Then input your idea via terminal!
 
-For unstable version, you also can run:
+For advanced features including our Trust-Verify Chain-of-Action flow:
 
 ```bash
 python run_flow.py
+```
+
+This will present you with two flow options:
+1. Planning Flow - Traditional task planning and execution
+2. Trust-Verify Flow (Default) - Enhanced safety with Chain-of-Action verification
+
+The Trust-Verify flow implements advanced safety features:
+- Action verification based on trust levels
+- Human-in-the-loop approval for critical actions
+- Transparent Chain-of-Action tracking
+- Detailed execution summaries
+
+### Example Workflow
+
+1. **User Input**: System receives a task request
+2. **Pre-reasoning**: Analyzes request in context of knowledge graph
+3. **Goal Identification**: Determines specific objectives
+4. **Action Planning**: Creates hierarchical action plan
+5. **Execution**: Implements actions with verification
+6. **Verification**: Validates results against goals
+
+### Operational Flow
+
+```mermaid
+graph TD
+    A[User Input] --> B[Pre-reasoning]
+    B --> C[Goal Identification]
+    C --> D[Action Planning]
+    D --> E[Execution]
+    E --> F[Verification]
+    F --> G{Success?}
+    G -->|Yes| H[Complete]
+    G -->|No| D
 ```
 
 ## How to contribute

@@ -1,166 +1,334 @@
+"""Planning flow implementation optimized for DeepSeek-R1's reasoning capabilities.
+
+This module implements a sophisticated planning flow that leverages DeepSeek-R1's
+strengths in hierarchical reasoning and knowledge manipulation. It maintains
+clear reasoning chains while managing the operational space and knowledge graph.
+"""
+
 import json
 import time
-from typing import Dict, List, Optional, Union
+import uuid
+from typing import Dict, List, Optional, Tuple, Union
 
 from pydantic import Field
 
 from app.agent.base import BaseAgent
-from app.flow.base import BaseFlow, PlanStepStatus
+from app.flow.base import BaseFlow, OperationalNode, PlanStepStatus
 from app.llm import LLM
 from app.logger import logger
 from app.schema import AgentState, Message
 from app.tool import PlanningTool
 
 
+class ReasoningChain:
+    """Manages DeepSeek-R1's reasoning chain for better context awareness."""
+    
+    def __init__(self, max_steps: int = 5, overlap: float = 0.3):
+        self.steps = []
+        self.max_steps = max_steps
+        self.overlap = overlap
+        
+    def add_step(self, thought: str, action: Optional[str] = None, result: Optional[str] = None):
+        """Add a reasoning step while maintaining the chain's coherence."""
+        step = {
+            "thought": thought,
+            "action": action,
+            "result": result,
+            "timestamp": time.time()
+        }
+        self.steps.append(step)
+        
+        # Maintain chain length while preserving context
+        if len(self.steps) > self.max_steps:
+            # Keep first step, last few steps based on overlap
+            keep_count = max(1, int(self.max_steps * self.overlap))
+            self.steps = [self.steps[0]] + self.steps[-(keep_count-1):]
+            
+    def get_context(self) -> str:
+        """Get the current reasoning context for DeepSeek-R1."""
+        context = "Previous reasoning steps:\n\n"
+        for i, step in enumerate(self.steps, 1):
+            context += f"Step {i}:\n"
+            context += f"Thought: {step['thought']}\n"
+            if step['action']:
+                context += f"Action: {step['action']}\n"
+            if step['result']:
+                context += f"Result: {step['result']}\n"
+            context += "\n"
+        return context
+
+
 class PlanningFlow(BaseFlow):
-    """A flow that manages planning and execution of tasks using agents."""
+    """A flow optimized for DeepSeek-R1's hierarchical planning capabilities.
+    
+    This flow leverages DeepSeek-R1's strengths in:
+    1. Structured reasoning chains
+    2. Context-aware decision making
+    3. Dynamic knowledge graph manipulation
+    4. Clear action planning and verification
+    
+    The flow maintains both a traditional operational space and a
+    DeepSeek-R1-specific reasoning chain for optimal performance.
+    """
 
     llm: LLM = Field(default_factory=lambda: LLM())
     planning_tool: PlanningTool = Field(default_factory=PlanningTool)
     executor_keys: List[str] = Field(default_factory=list)
     active_plan_id: str = Field(default_factory=lambda: f"plan_{int(time.time())}")
     current_step_index: Optional[int] = None
+    reasoning_chain: ReasoningChain = Field(default_factory=ReasoningChain)
 
     def __init__(
         self, agents: Union[BaseAgent, List[BaseAgent], Dict[str, BaseAgent]], **data
     ):
-        # Set executor keys before super().__init__
-        if "executors" in data:
-            data["executor_keys"] = data.pop("executors")
-
-        # Set plan ID if provided
-        if "plan_id" in data:
-            data["active_plan_id"] = data.pop("plan_id")
-
-        # Initialize the planning tool if not provided
-        if "planning_tool" not in data:
-            planning_tool = PlanningTool()
-            data["planning_tool"] = planning_tool
-
-        # Call parent's init with the processed data
+        """Initialize the planning flow with DeepSeek-R1 optimizations."""
         super().__init__(agents, **data)
+        
+        # Initialize DeepSeek-R1 specific components
+        self.reasoning_chain = ReasoningChain(
+            max_steps=self.config.get("deepseek.max_reasoning_steps", 5),
+            overlap=self.config.get("deepseek.context_overlap", 0.3)
+        )
+        
+        # Initialize operational space
+        self._initialize_operational_space()
 
-        # Set executor_keys to all agent keys if not specified
-        if not self.executor_keys:
-            self.executor_keys = list(self.agents.keys())
+    def _initialize_operational_space(self):
+        """Initialize the operational space with core system nodes."""
+        # Add planning control node
+        self.update_operational_space(
+            node_id="planning_control",
+            node_type=OperationalNode.SYSTEM,
+            data={
+                "active_plan": self.active_plan_id,
+                "status": "initialized",
+                "current_step": None
+            }
+        )
+        
+        # Add knowledge graph node
+        self.update_operational_space(
+            node_id="knowledge_graph",
+            node_type=OperationalNode.MUTABLE,
+            data={
+                "contexts": {},
+                "relationships": {}
+            }
+        )
+        
+        # Add function registry node
+        self.update_operational_space(
+            node_id="function_registry",
+            node_type=OperationalNode.FUNCTION,
+            data={
+                "available_tools": [tool.name for tool in (self.tools or [])]
+            }
+        )
 
     def get_executor(self, step_type: Optional[str] = None) -> BaseAgent:
-        """
-        Get an appropriate executor agent for the current step.
-        Can be extended to select agents based on step type/requirements.
-        """
+        """Get an appropriate executor agent based on step requirements."""
+        # Update operational space with executor selection
+        executor_node_id = f"executor_{uuid.uuid4().hex[:8]}"
+        
         # If step type is provided and matches an agent key, use that agent
         if step_type and step_type in self.agents:
-            return self.agents[step_type]
+            agent = self.agents[step_type]
+            self.update_operational_space(
+                node_id=executor_node_id,
+                node_type=OperationalNode.AGENT,
+                data={
+                    "agent_type": step_type,
+                    "capabilities": agent.__class__.__name__,
+                    "status": "selected"
+                }
+            )
+            return agent
 
         # Otherwise use the first available executor or fall back to primary agent
         for key in self.executor_keys:
             if key in self.agents:
-                return self.agents[key]
+                agent = self.agents[key]
+                self.update_operational_space(
+                    node_id=executor_node_id,
+                    node_type=OperationalNode.AGENT,
+                    data={
+                        "agent_type": key,
+                        "capabilities": agent.__class__.__name__,
+                        "status": "selected"
+                    }
+                )
+                return agent
 
         # Fallback to primary agent
-        return self.primary_agent
+        agent = self.primary_agent
+        self.update_operational_space(
+            node_id=executor_node_id,
+            node_type=OperationalNode.AGENT,
+            data={
+                "agent_type": "primary",
+                "capabilities": agent.__class__.__name__,
+                "status": "selected"
+            }
+        )
+        return agent
 
     async def execute(self, input_text: str) -> str:
-        """Execute the planning flow with agents."""
+        """Execute the hierarchical planning flow following the operational space model."""
         try:
             if not self.primary_agent:
                 raise ValueError("No primary agent available")
 
-            # Create initial plan if input provided
+            # 1. Process User Inquiry
+            event_node_id = f"event_{uuid.uuid4().hex[:8]}"
+            self.update_operational_space(
+                node_id=event_node_id,
+                node_type=OperationalNode.EXTERNAL,
+                data={
+                    "type": "user_inquiry",
+                    "content": input_text,
+                    "timestamp": time.time()
+                }
+            )
+
+            # 2. Pre-reasoning and Plan Creation
             if input_text:
                 await self._create_initial_plan(input_text)
-
-                # Verify plan was created successfully
+                
+                # Verify plan creation
                 if self.active_plan_id not in self.planning_tool.plans:
-                    logger.error(
-                        f"Plan creation failed. Plan ID {self.active_plan_id} not found in planning tool."
-                    )
+                    logger.error(f"Plan creation failed. Plan ID {self.active_plan_id} not found.")
                     return f"Failed to create plan for: {input_text}"
 
+            # 3. Execute Plan with Goal Tracking
             result = ""
             while True:
-                # Get current step to execute
+                # Get current step and update operational space
                 self.current_step_index, step_info = await self._get_current_step_info()
-
-                # Exit if no more steps or plan completed
+                
+                # Exit if no more steps
                 if self.current_step_index is None:
                     result += await self._finalize_plan()
                     break
 
-                # Execute current step with appropriate agent
+                # Execute step with appropriate agent
                 step_type = step_info.get("type") if step_info else None
                 executor = self.get_executor(step_type)
+                
+                # Update step in operational space
+                step_node_id = f"step_{self.current_step_index}"
+                self.update_operational_space(
+                    node_id=step_node_id,
+                    node_type=OperationalNode.SYSTEM,
+                    data={
+                        "index": self.current_step_index,
+                        "type": step_type,
+                        "status": "executing",
+                        "executor": executor.__class__.__name__
+                    }
+                )
+                
+                # Execute and capture result
                 step_result = await self._execute_step(executor, step_info)
                 result += step_result + "\n"
+                
+                # Update step completion in operational space
+                self.update_operational_space(
+                    node_id=step_node_id,
+                    node_type=OperationalNode.SYSTEM,
+                    data={
+                        "index": self.current_step_index,
+                        "type": step_type,
+                        "status": "completed",
+                        "result": step_result
+                    }
+                )
 
-                # Check if agent wants to terminate
+                # Check for termination
                 if hasattr(executor, "state") and executor.state == AgentState.FINISHED:
                     break
 
             return result
+            
         except Exception as e:
             logger.error(f"Error in PlanningFlow: {str(e)}")
+            # Update error in operational space
+            self.update_operational_space(
+                node_id=f"error_{uuid.uuid4().hex[:8]}",
+                node_type=OperationalNode.SYSTEM,
+                data={
+                    "type": "execution_error",
+                    "message": str(e),
+                    "timestamp": time.time()
+                }
+            )
             return f"Execution failed: {str(e)}"
 
     async def _create_initial_plan(self, request: str) -> None:
-        """Create an initial plan based on the request using the flow's LLM and PlanningTool."""
+        """Create an initial plan using DeepSeek-R1's structured reasoning."""
         logger.info(f"Creating initial plan with ID: {self.active_plan_id}")
 
-        # Create a system message for plan creation
+        # Create a system message optimized for DeepSeek-R1
         system_message = Message.system_message(
-            "You are a planning assistant. Create a concise, actionable plan with clear steps. "
-            "Focus on key milestones rather than detailed sub-steps. "
-            "Optimize for clarity and efficiency."
+            "You are a planning assistant powered by DeepSeek-R1. "
+            "Create a structured, hierarchical plan that:\n"
+            "1. Breaks down complex tasks into logical sub-tasks\n"
+            "2. Maintains clear dependencies between steps\n"
+            "3. Includes verification points for critical actions\n"
+            "4. Considers both task completion and safety requirements"
         )
 
-        # Create a user message with the request
-        user_message = Message.user_message(
-            f"Create a reasonable plan with clear steps to accomplish the task: {request}"
-        )
+        # Add reasoning context
+        context = self.reasoning_chain.get_context()
+        
+        # Create planning prompt
+        planning_prompt = f"""
+        CONTEXT:
+        {context}
 
-        # Call LLM with PlanningTool
+        TASK REQUEST:
+        {request}
+
+        Please create a detailed plan that:
+        1. Identifies key objectives
+        2. Breaks down complex actions
+        3. Includes verification steps
+        4. Maintains logical flow
+
+        Format each step as: [TYPE] Step description
+        Types: ANALYZE, PLAN, EXECUTE, VERIFY, REPORT
+        """
+
+        # Call LLM with planning-specific temperature
         response = await self.llm.ask_tool(
-            messages=[user_message],
+            messages=[Message.user_message(planning_prompt)],
             system_msgs=[system_message],
             tools=[self.planning_tool.to_param()],
             tool_choice="required",
+            temperature=self.config.get("deepseek.planning_temperature", 0.2)
         )
 
-        # Process tool calls if present
+        # Process and store the reasoning step
+        self.reasoning_chain.add_step(
+            thought="Initial plan creation",
+            action="Create structured plan",
+            result=str(response)
+        )
+
+        # Process tool calls and create plan
         if response.tool_calls:
             for tool_call in response.tool_calls:
                 if tool_call.function.name == "planning":
-                    # Parse the arguments
-                    args = tool_call.function.arguments
-                    if isinstance(args, str):
-                        try:
-                            args = json.loads(args)
-                        except json.JSONDecodeError:
-                            logger.error(f"Failed to parse tool arguments: {args}")
-                            continue
+                    try:
+                        args = json.loads(tool_call.function.arguments)
+                        args["plan_id"] = self.active_plan_id
+                        result = await self.planning_tool.execute(**args)
+                        logger.info(f"Plan creation result: {str(result)}")
+                        return
+                    except Exception as e:
+                        logger.error(f"Error processing plan creation: {e}")
 
-                    # Ensure plan_id is set correctly and execute the tool
-                    args["plan_id"] = self.active_plan_id
-
-                    # Execute the tool via ToolCollection instead of directly
-                    result = await self.planning_tool.execute(**args)
-
-                    logger.info(f"Plan creation result: {str(result)}")
-                    return
-
-        # If execution reached here, create a default plan
-        logger.warning("Creating default plan")
-
-        # Create default plan using the ToolCollection
-        await self.planning_tool.execute(
-            **{
-                "command": "create",
-                "plan_id": self.active_plan_id,
-                "title": f"Plan for: {request[:50]}{'...' if len(request) > 50 else ''}",
-                "steps": ["Analyze request", "Execute task", "Verify results"],
-            }
-        )
+        # Create default plan if needed
+        await self._create_default_plan(request)
 
     async def _get_current_step_info(self) -> tuple[Optional[int], Optional[dict]]:
         """
@@ -227,29 +395,54 @@ class PlanningFlow(BaseFlow):
             return None, None
 
     async def _execute_step(self, executor: BaseAgent, step_info: dict) -> str:
-        """Execute the current step with the specified agent using agent.run()."""
-        # Prepare context for the agent with current plan status
+        """Execute a step with DeepSeek-R1's reasoning capabilities."""
+        # Get current context
+        context = self.reasoning_chain.get_context()
         plan_status = await self._get_plan_text()
         step_text = step_info.get("text", f"Step {self.current_step_index}")
 
-        # Create a prompt for the agent to execute the current step
+        # Create a DeepSeek-R1 optimized prompt
         step_prompt = f"""
-        CURRENT PLAN STATUS:
+        CURRENT CONTEXT:
+        {context}
+
+        PLAN STATUS:
         {plan_status}
 
-        YOUR CURRENT TASK:
-        You are now working on step {self.current_step_index}: "{step_text}"
+        CURRENT STEP:
+        You are executing step {self.current_step_index}: "{step_text}"
 
-        Please execute this step using the appropriate tools. When you're done, provide a summary of what you accomplished.
+        Approach this step by:
+        1. Analyzing requirements and constraints
+        2. Planning specific actions
+        3. Executing with appropriate tools
+        4. Verifying results
+        5. Updating the knowledge graph
+
+        Maintain awareness of:
+        - Previous reasoning steps
+        - Overall plan context
+        - Safety requirements
+        - Verification needs
         """
 
-        # Use agent.run() to execute the step
         try:
-            step_result = await executor.run(step_prompt)
+            # Execute with reasoning-specific temperature
+            step_result = await executor.run(
+                step_prompt,
+                temperature=self.config.get("deepseek.reasoning_temperature", 0.1)
+            )
 
-            # Mark the step as completed after successful execution
+            # Store the reasoning step
+            self.reasoning_chain.add_step(
+                thought=f"Executing step {self.current_step_index}",
+                action=step_text,
+                result=step_result
+            )
+
+            # Mark completion and update operational space
             await self._mark_step_completed()
-
+            
             return step_result
         except Exception as e:
             logger.error(f"Error executing step {self.current_step_index}: {e}")

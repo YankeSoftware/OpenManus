@@ -1,0 +1,70 @@
+# Global LLM configuration
+[llm]
+model = "deepseek-reasoner"  # DeepSeek-R1 model for regular queries
+base_url = "https://api.deepseek.com/v1"  # Adjust based on actual API endpoint
+api_key = "sk-aaa0a2708abf436dbe5d420bd36d68f5"
+max_tokens = 4096  # Correct max tokens value
+temperature = 0.3  # Lower temperature for more focused reasoning
+api_type = "openai"
+api_version = ""  # Not needed for standard OpenAI API
+
+# Function calling model configuration
+[llm.function_calling]
+model = "deepseek-coder"  # Model that supports function calling
+max_tokens = 2048  # Reduced max tokens for deepseek-coder
+temperature = 0.3
+base_url = "https://api.deepseek.com/v1"
+api_key = "sk-aaa0a2708abf436dbe5d420bd36d68f5"
+api_type = "openai"
+api_version = ""
+
+# Model-specific settings for DeepSeek
+[llm.deepseek]
+context_window = 8192  # DeepSeek's context window
+system_prompt = """You are an advanced AI assistant powered by DeepSeek-R1, specializing in:
+1. Hierarchical planning and reasoning
+2. Dynamic knowledge graph manipulation
+3. Chain-of-Action verification
+4. Transparent decision making
+
+Focus on providing clear, logical reasoning steps and maintain awareness of the operational context."""
+
+# Trust-Verify Flow Configuration
+[trust_verify]
+# Trust level thresholds for action verification (0.0 - 1.0)
+high_trust_threshold = 0.0     # No verification needed
+medium_trust_threshold = 0.3   # 30% of actions verified
+low_trust_threshold = 0.8     # 80% of actions verified
+zero_trust_threshold = 1.0    # Always verified
+
+# Logging and transparency settings
+show_thinking = true          # Show agent reasoning
+show_approvals = true         # Show approval requests
+detailed_summaries = true     # Generate detailed execution summaries
+
+# DeepSeek-R1 Specific Settings
+[deepseek]
+# Reasoning configuration
+reasoning_temperature = 0.3    # Lower temperature for reasoning steps
+planning_temperature = 0.7    # Slightly higher for creative planning
+execution_temperature = 0.0   # Precise execution
+
+# Context management
+max_reasoning_steps = 5       # Maximum steps in reasoning chain
+context_overlap = 0.3         # Context overlap between steps
+memory_buffer_size = 8196     # Size of working memory buffer
+
+# [llm] #AZURE OPENAI:
+# api_type= 'azure'
+# model = "YOUR_MODEL_NAME" #"gpt-4o-mini"
+# base_url = "{YOUR_AZURE_ENDPOINT.rstrip('/')}/openai/deployments/{AZURE_DEPOLYMENT_ID}"
+# api_key = "AZURE API KEY"
+# max_tokens = 8096
+# temperature = 0.0
+# api_version="AZURE API VERSION" #"2024-08-01-preview"
+
+# Optional configuration for specific LLM models
+[llm.vision]
+model = "claude-3-5-sonnet"
+base_url = "https://api.openai.com/v1"
+api_key = "sk-..."
