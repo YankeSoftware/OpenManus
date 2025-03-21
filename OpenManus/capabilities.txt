@@ -1,0 +1,1 @@
+OpenManus can execute Python code, save files, browse the web, and perform Google searches.

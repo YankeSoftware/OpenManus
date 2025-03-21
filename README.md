@@ -153,7 +153,20 @@ temperature = 0.0
 model = "gpt-4o"
 base_url = "https://api.openai.com/v1"
 api_key = "sk-..."  # Replace with your actual API key
+
+# Brave Search API Configuration
+[brave_search]
+api_key = "BSA-..."  # Replace with your Brave Search API key
+endpoint = "https://api.search.brave.com/res/v1/web/search"
 ```
+
+### Obtaining a Brave Search API Key
+
+To use the Brave Search functionality, you'll need to obtain an API key:
+
+1. Visit the [Brave Search API](https://api.search.brave.com/) website
+2. Sign up for an API key
+3. Add your API key to the `config.toml` file in the `brave_search` section
 
 ## Quick Start
 
